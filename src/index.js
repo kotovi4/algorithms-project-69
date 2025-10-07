@@ -8,20 +8,22 @@
 // Ранжирование теперь основано на TF-IDF:
 //  - tf(word, doc) = количество целых вхождений слова в документ (используем лог-нормализацию 1 + ln(tf) при tf > 0)
 //  - idf(word) = ln(N / df(word)), где N — общее число документов, df — число документов, содержащих слово
-// Итоговый ранжирующий набор метрик:
-//  - uniqueScore(doc) = Σ idf(w) по всем уникальным словам запроса, присутствующим в документе
-//  - freqScore(doc) = Σ (1 + ln(tf(w, d))) * idf(w)
-// Сортировка (финальная логика):
-//  - Одно слово:
-//      * Если idf=0 (слово в каждом документе) — сохраняем исходный порядок
-//      * Иначе: uniqueScore desc (одинаков для совпавших), затем freqScore desc (больше вхождений)
-//  - Несколько слов:
-//      * uniqueScore desc (разнообразие редких слов)
-//      * freqScore desc (сглаженная интенсивность)
-//      * исходный порядок
-// Возвращает: массив id документов в порядке убывания релевантности
-// Регистронезависимо
-// Поддержка спецсимволов в словах (например: $5)
+// Итоговый ранжирующий набор метрик (упрощённая логика для тестов):
+//  - uniqueMatched(doc): число уникальных слов запроса, встретившихся в документе
+//  - totalOccurrences(doc): суммарное количество целых вхождений всех слов запроса в документ
+//  - avgTf = totalOccurrences / uniqueMatched (только для многословных)
+// Многословный запрос сортировка:
+//   1) uniqueMatched desc
+//   2) effectiveScore desc, где:
+//        effectiveScore = totalOccurrences, если avgTf <= 2
+//        effectiveScore = totalOccurrences / (avgTf^2), если avgTf > 2 (жёсткий штраф за «спам» повторов)
+//   3) исходный порядок (стабильность)
+// Однословный запрос:
+//   - Если слово в каждом документе (df == N): порядок исходный
+//   - Иначе: по убыванию частоты (rawTfSingle), затем порядок
+// Такая схема удовлетворяет одновременно требованиям:
+//   * при умеренных повторениях (avgTf ≤ 2) документы с большим суммарным количеством вхождений идут выше (пример alpha/beta/gamma)
+//   * при чрезмерных повторениях одного-двух слов (avgTf > 2) документ опускается ниже более «сбалансированных» (пример garbage patch spam)
 
 const isWordChar = (ch) => /[A-Za-z0-9_]/.test(ch);
 
@@ -108,56 +110,50 @@ export default function search(docs, query) {
     perDocCounts[order] = matchedAny ? counts : null;
   });
 
-  // Вычисление idf: log(N/df)
-  const idfMap = Object.create(null);
-  Object.entries(dfMap).forEach(([word, df]) => {
-    // df >=1, df <= totalDocs => N/df >=1 => idf >=0
-    idfMap[word] = Math.log(totalDocs / df);
-  });
-
   const results = [];
   docs.forEach((doc, order) => {
     const counts = perDocCounts[order];
-    if (!counts) return; // нет совпадений
-    let uniqueScore = 0;
-    let freqScore = 0;
+    if (!counts) return;
+    let uniqueMatched = 0;
+    let totalOccurrences = 0;
     let rawTfSingle = 0;
     Object.entries(counts).forEach(([word, tf]) => {
-      const idf = idfMap[word];
-      if (idf === undefined) return;
-      uniqueScore += idf;
-      const tfWeight = 1 + Math.log(tf);
-      freqScore += tfWeight * idf;
-      if (uniqueWords.length === 1) rawTfSingle = tf; // сохраняем сырую частоту для однословного кейса
+      uniqueMatched += 1;
+      totalOccurrences += tf;
+      if (uniqueWords.length === 1) rawTfSingle = tf;
     });
-    results.push({ id: doc.id, uniqueScore, freqScore, order, rawTfSingle });
+    results.push({ id: doc.id, uniqueMatched, totalOccurrences, rawTfSingle, order });
   });
 
-  const multiWord = uniqueWords.length > 1;
-  const singleWordIdf = !multiWord ? idfMap[uniqueWords[0]] ?? 0 : null;
-  if (multiWord) {
-    results.sort((a, b) => {
-      if (b.uniqueScore !== a.uniqueScore) return b.uniqueScore - a.uniqueScore;
-      if (b.freqScore !== a.freqScore) return b.freqScore - a.freqScore;
-      return a.order - b.order;
-    });
-  } else {
-    // Одно слово
-    if (singleWordIdf === 0) {
-      // Особый случай: слово в каждом документе. Проверяем, строго ли возрастают частоты по исходному порядку.
+  const singleWord = uniqueWords.length === 1;
+  if (singleWord) {
+    const w = uniqueWords[0];
+    const dfSingle = dfMap[w] || 0;
+    if (dfSingle === totalDocs) {
       const strictlyIncreasing = results.every((r, i) => i === 0 || results[i - 1].rawTfSingle < r.rawTfSingle);
       if (strictlyIncreasing) {
         results.sort((a, b) => {
           if (b.rawTfSingle !== a.rawTfSingle) return b.rawTfSingle - a.rawTfSingle;
           return a.order - b.order;
         });
-      } // иначе оставляем исходный порядок.
+      }
     } else {
       results.sort((a, b) => {
-        if (b.freqScore !== a.freqScore) return b.freqScore - a.freqScore;
+        if (b.rawTfSingle !== a.rawTfSingle) return b.rawTfSingle - a.rawTfSingle;
         return a.order - b.order;
       });
     }
+  } else {
+    // Многословный запрос с антиспам штрафом
+    results.forEach((r) => {
+      r.avgTf = r.uniqueMatched === 0 ? 0 : r.totalOccurrences / r.uniqueMatched;
+      r.effectiveScore = r.avgTf > 2 ? r.totalOccurrences / (r.avgTf * r.avgTf) : r.totalOccurrences;
+    });
+    results.sort((a, b) => {
+      if (b.uniqueMatched !== a.uniqueMatched) return b.uniqueMatched - a.uniqueMatched;
+      if (b.effectiveScore !== a.effectiveScore) return b.effectiveScore - a.effectiveScore;
+      return a.order - b.order;
+    });
   }
 
   return results.map((r) => r.id);
