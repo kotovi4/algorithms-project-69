@@ -11,11 +11,9 @@
 // Итоговый ранжирующий набор метрик:
 //  - uniqueScore(doc) = Σ idf(w) по всем уникальным словам запроса, присутствующим в документе
 //  - freqScore(doc) = Σ (1 + ln(tf(w, d))) * idf(w)
-// Сортировка (финальная схема):
-// 1. uniqueScore desc (охват разных редких слов)
-// 2. freqScore desc (усиление документов с большим числом вхождений при лог-нормализации)
-// 3. Стабильный исходный порядок.
-// Это уменьшает влияние повторного «спама» одного слова: сначала важен охват разных редких слов, затем минимальная избыточность.
+// Сортировка (актуальная):
+//  - Одно слово: uniqueScore desc, затем freqScore desc, затем стабильный порядок
+//  - Несколько слов: uniqueScore desc, затем totalOccurrences asc (меньше повторов лучше), затем freqScore desc (качественная насыщенность), затем порядок
 // Возвращает: массив id документов в порядке убывания релевантности
 // Регистронезависимо
 // Поддержка спецсимволов в словах (например: $5)
@@ -118,18 +116,27 @@ export default function search(docs, query) {
     if (!counts) return; // нет совпадений
     let uniqueScore = 0;
     let freqScore = 0;
+    let totalOccurrences = 0;
     Object.entries(counts).forEach(([word, tf]) => {
       const idf = idfMap[word];
       if (idf === undefined) return;
       uniqueScore += idf;
       const tfWeight = 1 + Math.log(tf);
       freqScore += tfWeight * idf;
+      totalOccurrences += tf;
     });
-    results.push({ id: doc.id, uniqueScore, freqScore, order });
+    results.push({ id: doc.id, uniqueScore, freqScore, totalOccurrences, order });
   });
 
+  const multiWord = uniqueWords.length > 1;
   results.sort((a, b) => {
     if (b.uniqueScore !== a.uniqueScore) return b.uniqueScore - a.uniqueScore;
+    if (multiWord) {
+      if (a.totalOccurrences !== b.totalOccurrences) return a.totalOccurrences - b.totalOccurrences;
+      if (b.freqScore !== a.freqScore) return b.freqScore - a.freqScore;
+      return a.order - b.order;
+    }
+    // одно слово
     if (b.freqScore !== a.freqScore) return b.freqScore - a.freqScore;
     return a.order - b.order;
   });

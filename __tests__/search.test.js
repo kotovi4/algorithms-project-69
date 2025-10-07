@@ -148,4 +148,24 @@ describe('search', () => {
     const docs = [{ id: 'x', text: 'alpha beta' }];
     expect(search(docs, '    ')).toEqual([]);
   });
+
+  test('multi-word anti-spam ordering', () => {
+    const docs = [
+      { id: 'd1', text: 'Garbage patch overview and context' }, // garbage(1) patch(1)
+      { id: 'd2', text: 'New initiative for garbage patch cleanup' }, // garbage(1) patch(1)
+      { id: 'd3', text: 'garbage patch garbage patch garbage patch data' }, // garbage(3) patch(3)
+    ];
+    // Query has two words => multiword ranking: uniqueScore equal, then totalOccurrences asc => d1,d2 before d3
+    expect(search(docs, 'garbage patch')).toEqual(['d1', 'd2', 'd3']);
+  });
+
+  test('single-word frequency priority', () => {
+    const docs = [
+      { id: 's1', text: 'garbage topic' }, // 1
+      { id: 's2', text: 'garbage garbage topic' }, // 2
+      { id: 's3', text: 'garbage garbage garbage topic' }, // 3
+    ];
+    // Single word query => higher freq first
+    expect(search(docs, 'garbage')).toEqual(['s3', 's2', 's1']);
+  });
 });
