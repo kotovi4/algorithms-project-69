@@ -5,7 +5,12 @@
 //  - разделяет запрос на слова, дедуплицирует для подсчёта уникальных
 //  - слово матчит только по целым токенам (границы: символы вне [A-Za-z0-9_])
 //  - документ релевантен, если содержит хотя бы одно слово
-//  - ранжирование: сначала по количеству уникальных совпавших слов (desc), затем по суммарному числу всех вхождений (desc), затем стабильность исходного порядка
+// Ранжирование теперь основано на TF-IDF:
+//  - tf(word, doc) = количество целых вхождений слова в документ
+//  - idf(word) = ln(N / df(word)), где N — общее число документов, df — число документов, содержащих слово
+// Итоговый score(doc) = Σ tf * idf по всем уникальным словам запроса, присутствующим в документе
+// Сортировка: по убыванию score, затем стабильный исходный порядок.
+// Слова, встречающиеся во всех документах (idf=0), не влияют на итоговый балл и не изменяют порядок сами по себе.
 // Возвращает: массив id документов в порядке убывания релевантности
 // Регистронезависимо
 // Поддержка спецсимволов в словах (например: $5)
@@ -66,36 +71,57 @@ export default function search(docs, query) {
   const trimmed = query.trim();
   if (trimmed.length === 0) return [];
 
-  // Разрешаем несколько слов: разбиваем по пробельным символам
   const rawWords = trimmed.split(/\s+/).filter((w) => w.length > 0);
   if (rawWords.length === 0) return [];
-
-  // Набор уникальных искомых слов (дедупликация для метрик)
   const uniqueWords = Array.from(new Set(rawWords.map((w) => w.toLowerCase())));
 
-  const results = [];
+  const totalDocs = docs.length;
+  if (totalDocs === 0) return [];
+
+  // Подсчёт tf для каждого документа и каждого слова + df для слов
+  const dfMap = Object.create(null); // word -> df count
+  const perDocCounts = []; // массив объектов word->tf для документа
 
   docs.forEach((doc, order) => {
-    if (!doc || typeof doc.id !== 'string' || typeof doc.text !== 'string') return;
-    let uniqueMatched = 0;
-    let totalOccurrences = 0;
-
+    if (!doc || typeof doc.id !== 'string' || typeof doc.text !== 'string') {
+      perDocCounts[order] = null;
+      return;
+    }
+    const counts = {};
+    let matchedAny = false;
     uniqueWords.forEach((word) => {
       const occ = countOccurrences(doc.text, word);
       if (occ > 0) {
-        uniqueMatched += 1;
-        totalOccurrences += occ;
+        counts[word] = occ;
+        matchedAny = true;
+        dfMap[word] = (dfMap[word] || 0) + 1;
       }
     });
+    perDocCounts[order] = matchedAny ? counts : null;
+  });
 
-    if (uniqueMatched > 0) {
-      results.push({ id: doc.id, uniqueMatched, totalOccurrences, order });
-    }
+  // Вычисление idf: log(N/df)
+  const idfMap = Object.create(null);
+  Object.entries(dfMap).forEach(([word, df]) => {
+    // df >=1, df <= totalDocs => N/df >=1 => idf >=0
+    idfMap[word] = Math.log(totalDocs / df);
+  });
+
+  const results = [];
+  docs.forEach((doc, order) => {
+    const counts = perDocCounts[order];
+    if (!counts) return; // нет совпадений по словам запроса
+    let score = 0;
+    Object.entries(counts).forEach(([word, tf]) => {
+      const idf = idfMap[word];
+      if (idf === undefined) return; // защитно
+      score += tf * idf; // tf-idf вклад
+    });
+    results.push({ id: doc.id, score, order });
   });
 
   results.sort((a, b) => {
-    if (b.uniqueMatched !== a.uniqueMatched) return b.uniqueMatched - a.uniqueMatched; // больше уникальных слов
-    if (b.totalOccurrences !== a.totalOccurrences) return b.totalOccurrences - a.totalOccurrences; // затем суммарные вхождения
+    if (b.score !== a.score) return b.score - a.score; // по убыванию TF-IDF
     return a.order - b.order; // стабильность
   });
 
