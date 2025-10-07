@@ -1,53 +1,82 @@
-// Exact word search function
-// docs: array of objects { id: string, text: string }
-// term: string to search (single word)
-// Returns array of document ids containing the term as a whole word (case-insensitive)
+// Search function
+// docs: Array<{ id: string, text: string }>
+// query: строка запроса: одно или несколько слов через пробел(ы)
+// Поведение:
+//  - разделяет запрос на слова, дедуплицирует для подсчёта уникальных
+//  - слово матчит только по целым токенам (границы: символы вне [A-Za-z0-9_])
+//  - документ релевантен, если содержит хотя бы одно слово
+//  - ранжирование: сначала по количеству уникальных совпавших слов (desc), затем по суммарному числу всех вхождений (desc), затем стабильность исходного порядка
+// Возвращает: массив id документов в порядке убывания релевантности
+// Регистронезависимо
+// Поддержка спецсимволов в словах (например: $5)
 
 const isWordChar = (ch) => /[A-Za-z0-9_]/.test(ch);
 
-export default function search(docs, term) {
-  if (!Array.isArray(docs) || typeof term !== 'string' || term.length === 0) {
-    return [];
+const countOccurrences = (text, needle) => {
+  if (!needle) return 0;
+  const lower = text.toLowerCase();
+  const needleLower = needle.toLowerCase();
+  const nLen = needleLower.length;
+  if (nLen === 0) return 0;
+  let fromIndex = 0;
+  let count = 0;
+  while (true) {
+    const idx = lower.indexOf(needleLower, fromIndex);
+    if (idx === -1) break;
+    const beforeChar = idx > 0 ? text[idx - 1] : null;
+    const afterPos = idx + nLen;
+    const afterChar = afterPos < text.length ? text[afterPos] : null;
+    const beforeOk = beforeChar == null || !isWordChar(beforeChar);
+    const afterOk = afterChar == null || !isWordChar(afterChar);
+    if (beforeOk && afterOk) {
+      count += 1;
+      fromIndex = idx + nLen;
+    } else {
+      fromIndex = idx + 1;
+    }
   }
-  if (/\s/.test(term)) {
-    return [];
-  }
-  const needle = term.toLowerCase();
-  const nLen = needle.length;
-  if (nLen === 0) return [];
+  return count;
+};
 
-  const collected = [];
+export default function search(docs, query) {
+  if (!Array.isArray(docs) || typeof query !== 'string') {
+    return [];
+  }
+  const trimmed = query.trim();
+  if (trimmed.length === 0) return [];
+
+  // Разрешаем несколько слов: разбиваем по пробельным символам
+  const rawWords = trimmed.split(/\s+/).filter((w) => w.length > 0);
+  if (rawWords.length === 0) return [];
+
+  // Набор уникальных искомых слов (дедупликация для метрик)
+  const uniqueWords = Array.from(new Set(rawWords.map((w) => w.toLowerCase())));
+
+  const results = [];
 
   docs.forEach((doc, order) => {
     if (!doc || typeof doc.id !== 'string' || typeof doc.text !== 'string') return;
-    const text = doc.text;
-    const lower = text.toLowerCase();
-    let fromIndex = 0;
-    let count = 0;
-    while (true) {
-      const idx = lower.indexOf(needle, fromIndex);
-      if (idx === -1) break;
-      const beforeChar = idx > 0 ? text[idx - 1] : null;
-      const afterPos = idx + nLen;
-      const afterChar = afterPos < text.length ? text[afterPos] : null;
-      const beforeOk = beforeChar == null || !isWordChar(beforeChar);
-      const afterOk = afterChar == null || !isWordChar(afterChar);
-      if (beforeOk && afterOk) {
-        count += 1;
-        fromIndex = idx + nLen; // пропускаем найденное слово
-      } else {
-        fromIndex = idx + 1; // сдвиг на один символ если не границы слова
+    let uniqueMatched = 0;
+    let totalOccurrences = 0;
+
+    uniqueWords.forEach((word) => {
+      const occ = countOccurrences(doc.text, word);
+      if (occ > 0) {
+        uniqueMatched += 1;
+        totalOccurrences += occ;
       }
-    }
-    if (count > 0) {
-      collected.push({ id: doc.id, count, order });
+    });
+
+    if (uniqueMatched > 0) {
+      results.push({ id: doc.id, uniqueMatched, totalOccurrences, order });
     }
   });
 
-  collected.sort((a, b) => {
-    if (b.count !== a.count) return b.count - a.count; // большее количество выше
-    return a.order - b.order; // стабильность исходного порядка
+  results.sort((a, b) => {
+    if (b.uniqueMatched !== a.uniqueMatched) return b.uniqueMatched - a.uniqueMatched; // больше уникальных слов
+    if (b.totalOccurrences !== a.totalOccurrences) return b.totalOccurrences - a.totalOccurrences; // затем суммарные вхождения
+    return a.order - b.order; // стабильность
   });
 
-  return collected.map((d) => d.id);
+  return results.map((r) => r.id);
 }
