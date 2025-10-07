@@ -144,14 +144,31 @@ export default function search(docs, query) {
       });
     }
   } else {
-    // Многословный запрос с антиспам штрафом
+    // Многословный запрос: комбинированная стратегия
+    const spamThreshold = 2.5;
     results.forEach((r) => {
       r.avgTf = r.uniqueMatched === 0 ? 0 : r.totalOccurrences / r.uniqueMatched;
-      r.effectiveScore = r.avgTf > 2 ? r.totalOccurrences / (r.avgTf * r.avgTf) : r.totalOccurrences;
+      r.isSpam = r.avgTf > spamThreshold;
     });
+    // Проверим есть ли вообще spam в группе
+    const anySpam = results.some((r) => r.isSpam);
     results.sort((a, b) => {
       if (b.uniqueMatched !== a.uniqueMatched) return b.uniqueMatched - a.uniqueMatched;
-      if (b.effectiveScore !== a.effectiveScore) return b.effectiveScore - a.effectiveScore;
+      // Если разные статусы спама — non-spam выше
+      if (a.isSpam !== b.isSpam) return a.isSpam ? 1 : -1;
+      // Оба либо spam, либо оба non-spam
+      if (!a.isSpam && !b.isSpam) {
+        // Если глобально нет спама, используем totalOccurrences DESC для сохранения порядка по насыщенности (tie case)
+        if (!anySpam) {
+          if (b.totalOccurrences !== a.totalOccurrences) return b.totalOccurrences - a.totalOccurrences;
+          return a.order - b.order; // стабильность
+        }
+        // Есть спам в других документах, но оба non-spam: сохраняем стабильность без изменения (минимум вмешательства)
+        if (b.totalOccurrences !== a.totalOccurrences) return b.totalOccurrences - a.totalOccurrences;
+        return a.order - b.order;
+      }
+      // Оба spam: продвигаем меньше повторов выше (ASC)
+      if (a.totalOccurrences !== b.totalOccurrences) return a.totalOccurrences - b.totalOccurrences;
       return a.order - b.order;
     });
   }
