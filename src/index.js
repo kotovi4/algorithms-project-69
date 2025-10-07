@@ -9,7 +9,6 @@ export default function search(docs, term) {
   if (!Array.isArray(docs) || typeof term !== 'string' || term.length === 0) {
     return [];
   }
-  // Считаем, что поиск только по одному слову без пробелов
   if (/\s/.test(term)) {
     return [];
   }
@@ -17,14 +16,14 @@ export default function search(docs, term) {
   const nLen = needle.length;
   if (nLen === 0) return [];
 
-  const result = [];
+  const collected = [];
 
-  for (const doc of docs) {
-    if (!doc || typeof doc.id !== 'string' || typeof doc.text !== 'string') continue;
+  docs.forEach((doc, order) => {
+    if (!doc || typeof doc.id !== 'string' || typeof doc.text !== 'string') return;
     const text = doc.text;
     const lower = text.toLowerCase();
-    let found = false;
     let fromIndex = 0;
+    let count = 0;
     while (true) {
       const idx = lower.indexOf(needle, fromIndex);
       if (idx === -1) break;
@@ -34,13 +33,21 @@ export default function search(docs, term) {
       const beforeOk = beforeChar == null || !isWordChar(beforeChar);
       const afterOk = afterChar == null || !isWordChar(afterChar);
       if (beforeOk && afterOk) {
-        found = true;
-        break; // достаточно одного совпадения на документ
+        count += 1;
+        fromIndex = idx + nLen; // пропускаем найденное слово
+      } else {
+        fromIndex = idx + 1; // сдвиг на один символ если не границы слова
       }
-      fromIndex = idx + 1; // продолжаем поиск дальше
     }
-    if (found) result.push(doc.id);
-  }
+    if (count > 0) {
+      collected.push({ id: doc.id, count, order });
+    }
+  });
 
-  return result;
+  collected.sort((a, b) => {
+    if (b.count !== a.count) return b.count - a.count; // большее количество выше
+    return a.order - b.order; // стабильность исходного порядка
+  });
+
+  return collected.map((d) => d.id);
 }

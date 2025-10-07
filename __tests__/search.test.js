@@ -7,7 +7,8 @@ describe('search', () => {
     const doc3 = { id: 'doc3', text: "I'm your shooter." };
     const docs = [doc1, doc2, doc3];
 
-    expect(search(docs, 'shoot')).toEqual(['doc1', 'doc2']);
+    // doc2 содержит 3 вхождения 'shoot', doc1 одно -> doc2 должен быть раньше
+    expect(search(docs, 'shoot')).toEqual(['doc2', 'doc1']);
   });
 
   test('empty documents', () => {
@@ -83,5 +84,17 @@ describe('search', () => {
       { id: 'b', text: 'no match here' },
     ];
     expect(search(docs, 'shoot')).toEqual(['a']);
+  });
+
+  test('ranking ordering and stable tie-breaker', () => {
+    const docs = [
+      { id: 'd1', text: 'shoot shoot once more shoot' }, // 3
+      { id: 'd2', text: 'shoot something shoot' }, // 2
+      { id: 'd3', text: 'just one shoot here' }, // 1
+      { id: 'd4', text: 'shoot and shoot' }, // 2
+      { id: 'd5', text: 'shoot shoot shoot shoot' }, // 4
+    ];
+    // expect order by count desc: d5 (4), d1 (3), then among 2-count keep original order d2, d4, then d3
+    expect(search(docs, 'shoot')).toEqual(['d5', 'd1', 'd2', 'd4', 'd3']);
   });
 });
