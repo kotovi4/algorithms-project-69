@@ -38,6 +38,27 @@ const countOccurrences = (text, needle) => {
   return count;
 };
 
+export function buildInvertedIndex(docs) {
+  if (!Array.isArray(docs)) return {};
+  const index = {};
+  docs.forEach((doc) => {
+    if (!doc || typeof doc.id !== 'string' || typeof doc.text !== 'string') return;
+    // Токенизация: последовательности символов [A-Za-z0-9_$']
+    const matches = doc.text.match(/[A-Za-z0-9_$']+/g);
+    if (!matches) return;
+    const seen = new Set();
+    matches.forEach((raw) => {
+      const word = raw.toLowerCase();
+      if (word.length === 0) return;
+      if (seen.has(word)) return; // избегаем повторного добавления doc.id для этого слова
+      seen.add(word);
+      if (!index[word]) index[word] = [];
+      index[word].push(doc.id);
+    });
+  });
+  return index;
+}
+
 export default function search(docs, query) {
   if (!Array.isArray(docs) || typeof query !== 'string') {
     return [];
