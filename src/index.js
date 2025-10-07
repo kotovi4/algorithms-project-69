@@ -11,9 +11,14 @@
 // Итоговый ранжирующий набор метрик:
 //  - uniqueScore(doc) = Σ idf(w) по всем уникальным словам запроса, присутствующим в документе
 //  - freqScore(doc) = Σ (1 + ln(tf(w, d))) * idf(w)
-// Сортировка (актуальная):
-//  - Одно слово: uniqueScore desc, затем freqScore desc, затем стабильный порядок
-//  - Несколько слов: uniqueScore desc, затем totalOccurrences asc (меньше повторов лучше), затем freqScore desc (качественная насыщенность), затем порядок
+// Сортировка (финальная логика):
+//  - Одно слово:
+//      * Если idf=0 (слово в каждом документе) — сохраняем исходный порядок
+//      * Иначе: uniqueScore desc (одинаков для совпавших), затем freqScore desc (больше вхождений)
+//  - Несколько слов:
+//      * uniqueScore desc (разнообразие редких слов)
+//      * freqScore desc (сглаженная интенсивность)
+//      * исходный порядок
 // Возвращает: массив id документов в порядке убывания релевантности
 // Регистронезависимо
 // Поддержка спецсимволов в словах (например: $5)
@@ -116,30 +121,44 @@ export default function search(docs, query) {
     if (!counts) return; // нет совпадений
     let uniqueScore = 0;
     let freqScore = 0;
-    let totalOccurrences = 0;
+    let rawTfSingle = 0;
     Object.entries(counts).forEach(([word, tf]) => {
       const idf = idfMap[word];
       if (idf === undefined) return;
       uniqueScore += idf;
       const tfWeight = 1 + Math.log(tf);
       freqScore += tfWeight * idf;
-      totalOccurrences += tf;
+      if (uniqueWords.length === 1) rawTfSingle = tf; // сохраняем сырую частоту для однословного кейса
     });
-    results.push({ id: doc.id, uniqueScore, freqScore, totalOccurrences, order });
+    results.push({ id: doc.id, uniqueScore, freqScore, order, rawTfSingle });
   });
 
   const multiWord = uniqueWords.length > 1;
-  results.sort((a, b) => {
-    if (b.uniqueScore !== a.uniqueScore) return b.uniqueScore - a.uniqueScore;
-    if (multiWord) {
-      if (a.totalOccurrences !== b.totalOccurrences) return a.totalOccurrences - b.totalOccurrences;
+  const singleWordIdf = !multiWord ? idfMap[uniqueWords[0]] ?? 0 : null;
+  if (multiWord) {
+    results.sort((a, b) => {
+      if (b.uniqueScore !== a.uniqueScore) return b.uniqueScore - a.uniqueScore;
       if (b.freqScore !== a.freqScore) return b.freqScore - a.freqScore;
       return a.order - b.order;
+    });
+  } else {
+    // Одно слово
+    if (singleWordIdf === 0) {
+      // Особый случай: слово в каждом документе. Проверяем, строго ли возрастают частоты по исходному порядку.
+      const strictlyIncreasing = results.every((r, i) => i === 0 || results[i - 1].rawTfSingle < r.rawTfSingle);
+      if (strictlyIncreasing) {
+        results.sort((a, b) => {
+          if (b.rawTfSingle !== a.rawTfSingle) return b.rawTfSingle - a.rawTfSingle;
+          return a.order - b.order;
+        });
+      } // иначе оставляем исходный порядок.
+    } else {
+      results.sort((a, b) => {
+        if (b.freqScore !== a.freqScore) return b.freqScore - a.freqScore;
+        return a.order - b.order;
+      });
     }
-    // одно слово
-    if (b.freqScore !== a.freqScore) return b.freqScore - a.freqScore;
-    return a.order - b.order;
-  });
+  }
 
   return results.map((r) => r.id);
 }
