@@ -6,11 +6,16 @@
 //  - слово матчит только по целым токенам (границы: символы вне [A-Za-z0-9_])
 //  - документ релевантен, если содержит хотя бы одно слово
 // Ранжирование теперь основано на TF-IDF:
-//  - tf(word, doc) = количество целых вхождений слова в документ
+//  - tf(word, doc) = количество целых вхождений слова в документ (используем лог-нормализацию 1 + ln(tf) при tf > 0)
 //  - idf(word) = ln(N / df(word)), где N — общее число документов, df — число документов, содержащих слово
-// Итоговый score(doc) = Σ tf * idf по всем уникальным словам запроса, присутствующим в документе
-// Сортировка: по убыванию score, затем стабильный исходный порядок.
-// Слова, встречающиеся во всех документах (idf=0), не влияют на итоговый балл и не изменяют порядок сами по себе.
+// Итоговый ранжирующий набор метрик:
+//  - uniqueScore(doc) = Σ idf(w) по всем уникальным словам запроса, присутствующим в документе
+//  - freqScore(doc) = Σ (1 + ln(tf(w, d))) * idf(w)
+// Сортировка (финальная схема):
+// 1. uniqueScore desc (охват разных редких слов)
+// 2. freqScore desc (усиление документов с большим числом вхождений при лог-нормализации)
+// 3. Стабильный исходный порядок.
+// Это уменьшает влияние повторного «спама» одного слова: сначала важен охват разных редких слов, затем минимальная избыточность.
 // Возвращает: массив id документов в порядке убывания релевантности
 // Регистронезависимо
 // Поддержка спецсимволов в словах (например: $5)
@@ -110,19 +115,23 @@ export default function search(docs, query) {
   const results = [];
   docs.forEach((doc, order) => {
     const counts = perDocCounts[order];
-    if (!counts) return; // нет совпадений по словам запроса
-    let score = 0;
+    if (!counts) return; // нет совпадений
+    let uniqueScore = 0;
+    let freqScore = 0;
     Object.entries(counts).forEach(([word, tf]) => {
       const idf = idfMap[word];
-      if (idf === undefined) return; // защитно
-      score += tf * idf; // tf-idf вклад
+      if (idf === undefined) return;
+      uniqueScore += idf;
+      const tfWeight = 1 + Math.log(tf);
+      freqScore += tfWeight * idf;
     });
-    results.push({ id: doc.id, score, order });
+    results.push({ id: doc.id, uniqueScore, freqScore, order });
   });
 
   results.sort((a, b) => {
-    if (b.score !== a.score) return b.score - a.score; // по убыванию TF-IDF
-    return a.order - b.order; // стабильность
+    if (b.uniqueScore !== a.uniqueScore) return b.uniqueScore - a.uniqueScore;
+    if (b.freqScore !== a.freqScore) return b.freqScore - a.freqScore;
+    return a.order - b.order;
   });
 
   return results.map((r) => r.id);
